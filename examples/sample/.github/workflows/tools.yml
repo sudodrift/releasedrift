@@ -1,0 +1,10 @@
+name: tools
+on: push
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release download v2.103.2 -R cli/cli -p 'gh_*_linux_amd64.deb'
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: curl -fsSLO https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64

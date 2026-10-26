@@ -1,0 +1,23 @@
+# Optional: `goreleaser release --clean` to build the archives.
+version: 2
+project_name: releasedrift
+before:
+  hooks:
+    - go vet ./...
+    - go test ./...
+builds:
+  - main: ./cmd/releasedrift
+    binary: releasedrift
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md]
+checksum:
+  name_template: SHA256SUMS
+changelog:
+  sort: asc

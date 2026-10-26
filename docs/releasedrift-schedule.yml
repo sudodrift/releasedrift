@@ -1,0 +1,51 @@
+# Example: run releasedrift every day and fail the job when a pinned hash no
+# longer matches or a release asset changed since the last run.
+# Copy to .github/workflows/releasedrift.yml in the repository to watch.
+name: releasedrift
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install releasedrift
+        run: go install github.com/sudodrift/releasedrift/cmd/releasedrift@v0.1.0
+
+      # The state file holds the digests seen on earlier runs. Without it
+      # every run is a first run and a swapped asset cannot be noticed.
+      - name: Restore digests from earlier runs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: releasedrift.state.json
+          key: releasedrift-${{ github.run_id }}
+          restore-keys: releasedrift-
+
+      - name: Check release downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: releasedrift --fail-on high --state releasedrift.state.json .
+
+      # Save even when the check failed, so the next run still compares
+      # against the digests from before the change.
+      - name: Save digests
+        if: always() && hashFiles('releasedrift.state.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: releasedrift.state.json
+          key: releasedrift-${{ github.run_id }}
