@@ -1,0 +1,115 @@
+name: release
+
+# Builds the release files and publishes the GitHub release for a tag.
+# Runs when a v* tag is pushed. To release an existing tag again, run it by
+# hand from main with the tag as input; the job checks out that tag, so old
+# tags do not need to contain this file.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      OUT: ${{ github.workspace }}/dist
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: local
+      LC_ALL: C
+    steps:
+      - name: Check the tag name
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "not a release tag: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: src
+          persist-credentials: false
+
+      - name: Check out the release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: meta
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - name: Test
+        working-directory: src
+        run: go test ./...
+
+      - name: Build
+        working-directory: src
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "the checkout is not clean" >&2
+            exit 1
+          fi
+          mkdir -p "$OUT"
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "$OUT/releasedrift-$os-$arch" ./cmd/releasedrift
+            done
+          done
+          cd "$OUT"
+          sha256sum releasedrift-* > checksums.txt
+
+      - name: Write the release notes
+        working-directory: meta
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          if [ -f ".github/release-notes/$TAG.md" ]; then
+            cp ".github/release-notes/$TAG.md" "$notes"
+          else
+            awk -v v="${TAG#v}" '
+              index($0, "## " v " ") == 1 || $0 == "## " v { on = 1; next }
+              on && /^## / { exit }
+              on { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "no release notes found for $TAG" >&2
+            exit 1
+          fi
+          newest=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+          if [ "$newest" = "$TAG" ]; then
+            echo "LATEST=true" >> "$GITHUB_ENV"
+          else
+            echo "LATEST=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$OUT"
+          ls -l
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest="$LATEST" ./*
